@@ -21,6 +21,7 @@ import type { Driver, Trip, AcRating } from "../lib/types";
 import { Chat } from "./Chat";
 import { Button } from "./Button";
 import { subscribeDriverLocation } from "../lib/firestore";
+import { startAlarm, stopAlarm } from "../lib/notification";
 
 type Phase = "waiting" | "confirmed" | "rejected" | "cancelled" | "rating";
 
@@ -65,24 +66,6 @@ export function BookingFlow({
   // Track previous trip status to detect transitions (for notification sound)
   const prevStatusRef = useRef<string | null>(null);
 
-  // Play notification beep using Web Audio API
-  function playNotificationBeep() {
-    try {
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const oscillator = audioCtx.createOscillator();
-      const gainNode = audioCtx.createGain();
-      oscillator.connect(gainNode);
-      gainNode.connect(audioCtx.destination);
-      oscillator.frequency.value = 800;
-      gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
-      gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1);
-      oscillator.start(audioCtx.currentTime);
-      oscillator.stop(audioCtx.currentTime + 1);
-    } catch (e) {
-      console.error("Audio playback error:", e);
-    }
-  }
-
   // Subscribe to driver live location when trip is accepted/active
   useEffect(() => {
     if (!trip || !trip.driverid || trip.status === "pending" || trip.status === "completed" || trip.status === "cancelled" || trip.status === "rejected") {
@@ -99,10 +82,17 @@ export function BookingFlow({
       return;
     }
 
-    // Detect transition to driver_arrived — play notification sound
     const prevStatus = prevStatusRef.current;
+    // Transition to accepted → loud continuous alarm + message
+    if (trip.status === "accepted" && prevStatus !== "accepted") {
+      startAlarm();
+      // Stop after a few seconds; the passenger will see the confirmed screen
+      setTimeout(() => stopAlarm(), 6000);
+    }
+    // Transition to driver_arrived → loud continuous alarm
     if (trip.status === "driver_arrived" && prevStatus !== "driver_arrived") {
-      playNotificationBeep();
+      startAlarm();
+      setTimeout(() => stopAlarm(), 6000);
     }
     prevStatusRef.current = trip.status;
 
@@ -117,7 +107,6 @@ export function BookingFlow({
     } else if (trip.status === "rejected") {
       setPhase("rejected");
     } else if (trip.status === "completed") {
-      // Immediately show rating screen — do not show any other screen first
       if (trip.passengerRating == null) {
         setPhase("rating");
         setRatingStep(trip.taxiType === "super" ? "ac" : "stars");
@@ -133,6 +122,11 @@ export function BookingFlow({
       return () => clearInterval(timer);
     }
   }, [phase]);
+
+  // Cleanup alarm on unmount
+  useEffect(() => {
+    return () => stopAlarm();
+  }, []);
 
   // --- Waiting phase ---
   if (phase === "waiting") {
@@ -374,9 +368,7 @@ export function BookingFlow({
                   <Star
                     size={40}
                     className={
-                      n <= stars
-                        ? "text-gold"
-                        : "text-ink-border"
+                      n <= stars ? "text-gold" : "text-ink-border"
                     }
                     fill={n <= stars ? "#D4A843" : "none"}
                   />
@@ -555,7 +547,7 @@ export function BookingFlow({
                 }`}
               >
                 {trip.status === "driver_arrived"
-                  ? "🚕 وصل السائق إلى موقعك، استعد للركوب"
+                  ? "🚕 السائق وصل إلى موقعك، استعد للركوب"
                   : trip.status === "picked_up"
                   ? "🚗 أنت في الطريق إلى وجهتك"
                   : "✅ وصلت إلى وجهتك، شكراً لاستخدامك تكسي خانقين"}
@@ -597,7 +589,6 @@ export function BookingFlow({
             <button
               onClick={() => {
                 const driverPhone = driver.phone;
-                console.log("Calling driver, phone:", driverPhone);
                 window.location.href = "tel:" + driverPhone;
               }}
               className="flex items-center justify-center gap-2 py-3.5 rounded-card bg-ink-card border border-gold/40 text-gold font-bold text-sm hover:bg-gold/10 transition"
@@ -608,7 +599,6 @@ export function BookingFlow({
             <button
               onClick={() => {
                 const driverPhone = driver.phone;
-                console.log("WhatsApp driver, phone:", driverPhone);
                 window.open(
                   "https://wa.me/" + driverPhone.replace("+", ""),
                   "_blank"

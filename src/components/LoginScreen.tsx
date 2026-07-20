@@ -16,6 +16,7 @@ import type { Driver } from "../lib/types";
 
 type Role = "rider" | "driver";
 type View = "login" | "register";
+type RiderStep = "phone" | "name";
 
 interface LoginScreenProps {
   onLogin: (phone: string, role: Role, driverDoc?: Driver) => void;
@@ -24,6 +25,8 @@ interface LoginScreenProps {
 export function LoginScreen({ onLogin }: LoginScreenProps) {
   const [view, setView] = useState<View>("login");
   const [phone, setPhone] = useState("");
+  const [name, setName] = useState("");
+  const [riderStep, setRiderStep] = useState<RiderStep>("phone");
   const [role, setRole] = useState<Role>("rider");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -59,7 +62,27 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
           return;
         }
       } else {
-        await upsertUserByPhone(fullPhone);
+        // Rider: check if user exists. If not, ask for name.
+        if (riderStep === "phone") {
+          const existing = await upsertUserByPhone(fullPhone);
+          if (existing.name && existing.name.trim() !== "") {
+            // Returning rider — login directly
+            onLogin(fullPhone, "rider");
+            return;
+          }
+          // New rider — ask for name
+          setRiderStep("name");
+          setLoading(false);
+          return;
+        }
+
+        // riderStep === "name"
+        if (name.trim().length < 2) {
+          setError("يرجى إدخال اسمك");
+          setLoading(false);
+          return;
+        }
+        await upsertUserByPhone(fullPhone, name.trim());
         onLogin(fullPhone, "rider");
         return;
       }
@@ -92,7 +115,11 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
         <p className="text-xs font-semibold text-txt-sub mb-2">اختر نوع الحساب</p>
         <div className="grid grid-cols-2 gap-3">
           <button
-            onClick={() => { setRole("rider"); setError(""); }}
+            onClick={() => {
+              setRole("rider");
+              setRiderStep("phone");
+              setError("");
+            }}
             className={`flex flex-col items-center gap-2 py-5 rounded-card border-2 transition-all ${
               role === "rider"
                 ? "border-gold bg-gold/10"
@@ -112,7 +139,10 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
             </span>
           </button>
           <button
-            onClick={() => { setRole("driver"); setError(""); }}
+            onClick={() => {
+              setRole("driver");
+              setError("");
+            }}
             className={`flex flex-col items-center gap-2 py-5 rounded-card border-2 transition-all ${
               role === "driver"
                 ? "border-gold bg-gold/10"
@@ -150,12 +180,43 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
               inputMode="numeric"
               placeholder="7XX XXX XXXX"
               value={phone}
-              onChange={(e) => { setPhone(e.target.value); setError(""); }}
+              onChange={(e) => {
+                setPhone(e.target.value);
+                setError("");
+                setRiderStep("phone");
+              }}
               className="w-full pr-10 pl-4 py-3 rounded-card border border-ink-border bg-ink-card text-txt placeholder:text-txt-muted focus:outline-none focus:border-gold/50 focus:ring-1 focus:ring-gold/30 transition"
             />
           </div>
         </div>
       </div>
+
+      {/* Rider name step */}
+      {role === "rider" && riderStep === "name" && (
+        <div className="mt-6 animate-slide-up">
+          <p className="text-xs font-semibold text-txt-sub mb-2">الاسم</p>
+          <div className="relative">
+            <User
+              size={18}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-txt-muted"
+            />
+            <input
+              type="text"
+              placeholder="أدخل اسمك"
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setError("");
+              }}
+              className="w-full pr-10 pl-4 py-3 rounded-card border border-ink-border bg-ink-card text-txt placeholder:text-txt-muted focus:outline-none focus:border-gold/50 focus:ring-1 focus:ring-gold/30 transition"
+              dir="rtl"
+            />
+            <p className="text-xs text-txt-muted mt-2">
+              سنستخدم اسمك لتعريف السائقين بك
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Error / status messages */}
       {error && (

@@ -22,6 +22,7 @@ import {
   creditDriverBalance,
   backfillApprovedBalances,
   submitRating,
+  getUserByPhone,
 } from "./lib/firestore";
 import { SplashScreen } from "./components/SplashScreen";
 import { LoginScreen } from "./components/LoginScreen";
@@ -31,8 +32,9 @@ import { DriverHome, type TripSummary } from "./components/DriverHome";
 import { TripHistory } from "./components/TripHistory";
 import { ProfileScreen } from "./components/ProfileScreen";
 import { BottomNav, type TabId } from "./components/BottomNav";
+import { AdminPanel } from "./components/AdminPanel";
 
-type Screen = "splash" | "login" | "app";
+type Screen = "splash" | "login" | "app" | "admin";
 type Role = "rider" | "driver";
 type BookingPhase = null | {
   from: string;
@@ -47,7 +49,13 @@ type BookingPhase = null | {
 const COMMISSION = 250;
 
 function App() {
-  const [screen, setScreen] = useState<Screen>("splash");
+  const [screen, setScreen] = useState<Screen>(() =>
+    typeof window !== "undefined" &&
+    (window.location.pathname === "/admin" ||
+      window.location.hash.replace(/^#/, "") === "/admin")
+      ? "admin"
+      : "splash"
+  );
   const [role, setRole] = useState<Role>("rider");
   const [phone, setPhone] = useState("");
   const [driverDoc, setDriverDoc] = useState<Driver | null>(null);
@@ -80,6 +88,37 @@ function App() {
     backfillApprovedBalances();
   }, []);
 
+  // Keep the browser URL in sync with the admin screen so that /admin can be
+  // opened directly, bookmarked, and reached via the browser back button.
+  useEffect(() => {
+    function sync() {
+      const isAdmin =
+        window.location.pathname === "/admin" ||
+        window.location.hash.replace(/^#/, "") === "/admin";
+      setScreen(isAdmin ? "admin" : "splash");
+    }
+    window.addEventListener("popstate", sync);
+    return () => window.removeEventListener("popstate", sync);
+  }, []);
+
+  function goToAdmin() {
+    try {
+      window.history.pushState({}, "", "/admin");
+    } catch {
+      // ignore history errors (e.g. sandboxed browsers)
+    }
+    setScreen("admin");
+  }
+
+  function exitAdmin() {
+    try {
+      window.history.pushState({}, "", "/");
+    } catch {
+      // ignore
+    }
+    setScreen("login");
+  }
+
   // Keep driverDoc in sync with the global drivers subscription
   const currentDriver = useMemo(() => {
     if (role !== "driver") return null;
@@ -98,7 +137,6 @@ function App() {
       return;
     }
     return subscribePendingTripsForDriver(currentDriver.id, (trips) => {
-      // Non-super drivers only see normal trips; super drivers see both
       if (currentDriver.isSuper) {
         setPendingTrips(trips);
       } else {
@@ -231,6 +269,18 @@ function App() {
     taxiType: TaxiType,
     fare: number
   ) {
+    // Fetch the passenger name directly from Firestore so it is always current,
+    // even if the global users subscription hasn't loaded yet.
+    let passengerName = currentUser?.name ?? "";
+    if (!passengerName) {
+      try {
+        const u = await getUserByPhone(phone);
+        if (u?.name) passengerName = u.name;
+      } catch {
+        // ignore — fall back to empty
+      }
+    }
+
     const tripId = await addTrip({
       Fromaddress: from,
       Toaddress: to,
@@ -240,6 +290,7 @@ function App() {
       fare,
       taxiType,
       passengerid: phone,
+      passengerName,
       paymentMethod: "cash",
     });
     setBooking({ from, to, fromCoords, toCoords, distance: distance ?? 0, taxiType, fare });
@@ -264,11 +315,12 @@ function App() {
     setActiveTrip(null);
   }
 
-  // Driver accepts a trip — first to accept wins (sets driverid + status)
-  function handleAcceptTrip(tripId: string) {
+  // Driver accepts a trip — first to accept wins (transaction in Firestore)
+  async function handleAcceptTrip(tripId: string): Promise<boolean> {
     if (currentDriver) {
-      acceptTrip(tripId, currentDriver.id);
+      return acceptTrip(tripId, currentDriver.id);
     }
+    return false;
   }
 
   // Driver rejects a trip: add to rejectedBy, trip stays pending for others
@@ -299,7 +351,6 @@ function App() {
     acRating: AcRating | null
   ) {
     await submitRating(tripId, driverId, rating, comment, acRating);
-    // Clear the booking so passenger returns home
     setBooking(null);
     setActiveTripId(null);
     setActiveTrip(null);
@@ -331,7 +382,6 @@ function App() {
       });
     } catch (e) {
       console.error("Complete trip error:", e);
-      // Fallback: mark completed + still show summary
       updateTripStatus(tripId, "completed");
       setTripSummary({
         tripId,
@@ -361,6 +411,11 @@ function App() {
     }
   }
 
+  // --- Admin ---
+  if (screen === "admin") {
+    return <AdminPanel onExit={exitAdmin} />;
+  }
+
   // --- Splash ---
   if (screen === "splash") {
     return (
@@ -375,6 +430,7 @@ function App() {
     return (
       <PhoneFrame>
         <LoginScreen onLogin={handleLogin} />
+        <AdminEntryButton onEnter={goToAdmin} />
       </PhoneFrame>
     );
   }
@@ -463,6 +519,19 @@ function PhoneFrame({ children }: { children: React.ReactNode }) {
         {children}
       </div>
     </div>
+  );
+}
+
+// Small, discreet admin entry button on the login screen
+function AdminEntryButton({ onEnter }: { onEnter: () => void }) {
+  return (
+    <button
+      onClick={onEnter}
+      className="fixed bottom-3 left-3 z-[100] text-txt-muted/40 hover:text-txt-muted transition text-[10px]"
+      title="لوحة الإدارة"
+    >
+      •
+    </button>
   );
 }
 

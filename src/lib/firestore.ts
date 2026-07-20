@@ -27,14 +27,18 @@ import type {
   ChatSender,
   TaxiType,
   AcRating,
+  RechargeRequest,
+  RechargeStatus,
+  Transaction,
 } from "./types";
 
 const USERS = "users";
 const DRIVERS = "drivers";
 const TRIPS = "Trips";
 const RECHARGE = "recharge_requests";
+const TRANSACTIONS = "transactions";
 
-const WELCOME_BALANCE = 15000;
+const WELCOME_BALANCE = 5000;
 const COMMISSION = 250;
 const MIN_BALANCE = -5000;
 
@@ -64,8 +68,23 @@ export function subscribeUsers(cb: (users: AppUser[]) => void) {
   });
 }
 
+export async function getUserByPhone(phone: string): Promise<AppUser | null> {
+  const ref = doc(db, USERS, phone);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+  const data = snap.data();
+  return {
+    id: snap.id,
+    name: (data.name as string) ?? "",
+    phone: (data.phone as string) ?? snap.id,
+    role: (data.role as "rider" | "driver") ?? "rider",
+    createdAt: tsToMillis(data.createdAt),
+  };
+}
+
 export async function upsertUserByPhone(
-  phone: string
+  phone: string,
+  name?: string
 ): Promise<AppUser> {
   const ref = doc(db, USERS, phone);
   const snap = await getDoc(ref);
@@ -81,12 +100,13 @@ export async function upsertUserByPhone(
   }
   await setDoc(ref, {
     phone,
+    name: name ?? "",
     role: "rider",
     createdAt: serverTimestamp(),
   });
   return {
     id: phone,
-    name: "",
+    name: name ?? "",
     phone,
     role: "rider",
     createdAt: Date.now(),
@@ -138,24 +158,19 @@ export async function registerDriver(input: DriverRegistrationInput) {
     currentLat: null,
     currentLng: null,
     status: "pending",
+    balance: WELCOME_BALANCE,
     createdAt: serverTimestamp(),
   });
 }
 
-export async function updateDriverOnline(
-  id: string,
-  isonline: boolean
-) {
+export async function updateDriverOnline(id: string, isonline: boolean) {
   await updateDoc(doc(db, DRIVERS, id), {
     isonline,
     IsAvailable: isonline,
   });
 }
 
-export async function updateDriverSuper(
-  id: string,
-  isSuper: boolean
-) {
+export async function updateDriverSuper(id: string, isSuper: boolean) {
   await updateDoc(doc(db, DRIVERS, id), { isSuper });
 }
 
@@ -203,17 +218,6 @@ export function subscribeTrips(cb: (trips: Trip[]) => void) {
   });
 }
 
-export function subscribeAvailableDrivers(cb: (drivers: Driver[]) => void) {
-  const q = query(
-    collection(db, DRIVERS),
-    where("status", "==", "approved"),
-    where("isonline", "==", true)
-  );
-  return onSnapshot(q, (snap) => {
-    cb(snap.docs.map((d) => mapDriver(d.id, d.data())));
-  });
-}
-
 export async function addTrip(input: {
   Fromaddress: string;
   Toaddress: string;
@@ -223,6 +227,7 @@ export async function addTrip(input: {
   fare: number;
   taxiType: TaxiType;
   passengerid: string;
+  passengerName: string;
   paymentMethod: PaymentMethod;
 }) {
   const docRef = await addDoc(collection(db, TRIPS), {
@@ -234,6 +239,7 @@ export async function addTrip(input: {
     fare: input.fare,
     taxiType: input.taxiType,
     passengerid: input.passengerid,
+    passengerName: input.passengerName,
     paymentMethod: input.paymentMethod,
     driverid: null,
     status: "pending",
@@ -271,12 +277,27 @@ export async function cancelTripByDriver(tripId: string) {
   });
 }
 
-// First driver to accept wins: atomically set driverid + status to accepted
-export async function acceptTrip(tripId: string, driverId: string) {
-  await updateDoc(doc(db, TRIPS, tripId), {
-    driverid: driverId,
-    status: "accepted",
-    updatedAt: serverTimestamp(),
+// Atomically accept a trip using a Firestore transaction.
+// Returns true if this driver won the race, false if another driver took it.
+export async function acceptTrip(
+  tripId: string,
+  driverId: string
+): Promise<boolean> {
+  return runTransaction(db, async (tx) => {
+    const tripRef = doc(db, TRIPS, tripId);
+    const tripSnap = await tx.get(tripRef);
+    if (!tripSnap.exists()) return false;
+    const data = tripSnap.data();
+    if (data.status !== "pending") {
+      // Already taken by another driver
+      return false;
+    }
+    tx.update(tripRef, {
+      driverid: driverId,
+      status: "accepted",
+      updatedAt: serverTimestamp(),
+    });
+    return true;
   });
 }
 
@@ -294,16 +315,6 @@ export function subscribePendingTripsForDriver(
     const trips = snap.docs
       .map((d) => mapTrip(d.id, d.data()))
       .filter((t) => !t.rejectedBy.includes(driverId));
-    trips.sort((a, b) => b.createdAt - a.createdAt);
-    cb(trips);
-  });
-}
-
-// All pending trips — visible to every online driver. First to accept wins.
-export function subscribePendingTrips(cb: (trips: Trip[]) => void): () => void {
-  const q = query(collection(db, TRIPS), where("status", "==", "pending"));
-  return onSnapshot(q, (snap) => {
-    const trips = snap.docs.map((d) => mapTrip(d.id, d.data()));
     trips.sort((a, b) => b.createdAt - a.createdAt);
     cb(trips);
   });
@@ -393,7 +404,6 @@ export async function submitRating(
     const driverData = driverSnap.data();
     const currentTotal = (driverData.TotalTrips as number) ?? 0;
     const currentRating = (driverData.rating as number) ?? 0;
-    // Recalculate average: (oldAvg * oldCount + newRating) / (oldCount + 1)
     const newTotal = currentTotal + 1;
     const newRating =
       newTotal > 0
@@ -440,8 +450,7 @@ function mapDriver(id: string, data: Record<string, unknown>): Driver {
 
 // ---------- Wallet ----------
 
-// Backfill: set balance to 15000 for approved drivers missing the field.
-// Also acts as the "welcome gift" when a driver is first approved.
+// Backfill: set balance to 5000 for approved drivers missing the field.
 export async function ensureDriverBalance(driverId: string) {
   await runTransaction(db, async (tx) => {
     const ref = doc(db, DRIVERS, driverId);
@@ -454,7 +463,6 @@ export async function ensureDriverBalance(driverId: string) {
   });
 }
 
-// Backfill all approved drivers in one pass (called on app start).
 export async function backfillApprovedBalances() {
   const q = query(
     collection(db, DRIVERS),
@@ -473,7 +481,7 @@ export async function backfillApprovedBalances() {
 }
 
 // Complete a trip and deduct commission in a single transaction.
-// Returns the driver's new balance, or null if the trip/driver was missing.
+// Also logs a transaction record. Returns the driver's new balance, or null if missing.
 export async function completeTripWithCommission(
   tripId: string,
   driverId: string
@@ -489,7 +497,6 @@ export async function completeTripWithCommission(
 
     const tripData = tripSnap.data();
     if (tripData.status === "completed") {
-      // Already completed — return current balance
       return (driverSnap.data().balance as number) ?? 0;
     }
 
@@ -503,6 +510,16 @@ export async function completeTripWithCommission(
     tx.update(driverRef, {
       balance: newBalance,
       TotalTrips: ((driverSnap.data().TotalTrips as number) ?? 0) + 1,
+    });
+
+    // Log transaction
+    const txRef = doc(collection(db, TRANSACTIONS));
+    tx.set(txRef, {
+      driverId,
+      amount: -COMMISSION,
+      tripId,
+      type: "commission",
+      createdAt: serverTimestamp(),
     });
 
     return newBalance;
@@ -567,6 +584,132 @@ export async function creditDriverBalance(
     if (!snap.exists()) return;
     const current = (snap.data().balance as number) ?? 0;
     tx.update(ref, { balance: current + amount });
+
+    // Log transaction
+    const txRef = doc(collection(db, TRANSACTIONS));
+    tx.set(txRef, {
+      driverId,
+      amount,
+      tripId: null,
+      type: "recharge",
+      createdAt: serverTimestamp(),
+    });
+  });
+}
+
+// ---------- Admin ----------
+
+export function subscribePendingDrivers(
+  cb: (drivers: Driver[]) => void
+): () => void {
+  const q = query(collection(db, DRIVERS), where("status", "==", "pending"));
+  return onSnapshot(q, (snap) => {
+    cb(snap.docs.map((d) => mapDriver(d.id, d.data())));
+  });
+}
+
+export function subscribeApprovedDrivers(
+  cb: (drivers: Driver[]) => void
+): () => void {
+  const q = query(collection(db, DRIVERS), where("status", "==", "approved"));
+  return onSnapshot(q, (snap) => {
+    cb(snap.docs.map((d) => mapDriver(d.id, d.data())));
+  });
+}
+
+export async function approveDriver(driverId: string) {
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, DRIVERS, driverId);
+    const snap = await tx.get(ref);
+    if (!snap.exists()) return;
+    const data = snap.data();
+    if (data.balance === undefined || data.balance === null) {
+      tx.update(ref, { status: "approved", balance: WELCOME_BALANCE });
+    } else {
+      tx.update(ref, { status: "approved" });
+    }
+  });
+}
+
+export async function rejectDriver(driverId: string) {
+  await updateDoc(doc(db, DRIVERS, driverId), { status: "rejected" });
+}
+
+export function subscribeRechargeRequests(
+  cb: (requests: RechargeRequest[]) => void
+): () => void {
+  return onSnapshot(collection(db, RECHARGE), (snap) => {
+    const requests = snap.docs.map((d) => {
+      const data = d.data();
+      return {
+        id: d.id,
+        driverId: (data.driverId as string) ?? "",
+        driverName: (data.driverName as string) ?? "",
+        driverPhone: (data.driverPhone as string) ?? "",
+        amount: (data.amount as number) ?? 0,
+        code: (data.code as string) ?? "",
+        status: (data.status as RechargeStatus) ?? "pending",
+        createdAt: tsToMillis(data.createdAt),
+      } as RechargeRequest;
+    });
+    requests.sort((a, b) => b.createdAt - a.createdAt);
+    cb(requests);
+  });
+}
+
+// Approve a recharge request: set status + credit the driver's balance.
+export async function approveRechargeRequest(
+  requestId: string,
+  driverId: string,
+  amount: number
+) {
+  await runTransaction(db, async (tx) => {
+    const reqRef = doc(db, RECHARGE, requestId);
+    const driverRef = doc(db, DRIVERS, driverId);
+    const reqSnap = await tx.get(reqRef);
+    const driverSnap = await tx.get(driverRef);
+    if (!reqSnap.exists()) return;
+    if (reqSnap.data().status !== "pending") return;
+
+    tx.update(reqRef, { status: "approved" });
+
+    if (driverSnap.exists()) {
+      const current = (driverSnap.data().balance as number) ?? 0;
+      tx.update(driverRef, { balance: current + amount });
+
+      const txRef = doc(collection(db, TRANSACTIONS));
+      tx.set(txRef, {
+        driverId,
+        amount,
+        tripId: null,
+        type: "recharge",
+        createdAt: serverTimestamp(),
+      });
+    }
+  });
+}
+
+export async function rejectRechargeRequest(requestId: string) {
+  await updateDoc(doc(db, RECHARGE, requestId), { status: "rejected" });
+}
+
+export function subscribeTransactions(
+  cb: (txs: Transaction[]) => void
+): () => void {
+  return onSnapshot(collection(db, TRANSACTIONS), (snap) => {
+    const txs = snap.docs.map((d) => {
+      const data = d.data();
+      return {
+        id: d.id,
+        driverId: (data.driverId as string) ?? "",
+        amount: (data.amount as number) ?? 0,
+        tripId: (data.tripId as string) ?? "",
+        type: (data.type as Transaction["type"]) ?? "commission",
+        createdAt: tsToMillis(data.createdAt),
+      } as Transaction;
+    });
+    txs.sort((a, b) => b.createdAt - a.createdAt);
+    cb(txs);
   });
 }
 
@@ -580,6 +723,7 @@ function mapTrip(id: string, data: Record<string, unknown>): Trip {
     distance: (data.distance as number) ?? 0,
     driverid: (data.driverid as string | null) ?? null,
     passengerid: (data.passengerid as string) ?? "",
+    passengerName: (data.passengerName as string) ?? "",
     fare: (data.fare as number) ?? 0,
     taxiType: (data.taxiType as TaxiType) ?? "normal",
     paymentMethod: (data.paymentMethod as PaymentMethod) ?? "cash",

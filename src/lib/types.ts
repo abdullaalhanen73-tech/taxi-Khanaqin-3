@@ -61,6 +61,7 @@ export interface Trip {
   distance: number;
   driverid: string | null;
   passengerid: string;
+  passengerName: string;
   fare: number;
   taxiType: TaxiType;
   paymentMethod: PaymentMethod;
@@ -93,5 +94,14 @@ export interface RechargeRequest {
   amount: number;
   code: string;
   status: RechargeStatus;
+  createdAt: number;
+}
+
+export interface Transaction {
+  id: string;
+  driverId: string;
+  amount: number;
+  tripId: string;
+  type: "commission" | "recharge";
   createdAt: number;
 }

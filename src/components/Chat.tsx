@@ -2,6 +2,10 @@ import { useState, useEffect, useRef } from "react";
 import { Send } from "lucide-react";
 import type { ChatMessage, ChatSender } from "../lib/types";
 import { subscribeMessages, sendMessage } from "../lib/firestore";
+import {
+  DRIVER_QUICK_MESSAGES,
+  PASSENGER_QUICK_MESSAGES,
+} from "../lib/notification";
 
 interface ChatProps {
   tripId: string;
@@ -14,6 +18,9 @@ export function Chat({ tripId, sender }: ChatProps) {
   const [sending, setSending] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
+  const quickMessages =
+    sender === "driver" ? DRIVER_QUICK_MESSAGES : PASSENGER_QUICK_MESSAGES;
+
   useEffect(() => {
     return subscribeMessages(tripId, setMessages);
   }, [tripId]);
@@ -24,8 +31,8 @@ export function Chat({ tripId, sender }: ChatProps) {
     }
   }, [messages]);
 
-  async function handleSend() {
-    const trimmed = text.trim();
+  async function handleSend(messageText?: string) {
+    const trimmed = (messageText ?? text).trim();
     if (!trimmed || sending) return;
     setSending(true);
     setText("");
@@ -51,7 +58,7 @@ export function Chat({ tripId, sender }: ChatProps) {
       >
         {messages.length === 0 ? (
           <p className="text-center text-xs text-txt-muted py-4">
-            لا رسائل بعد — أرسل رسالة للسائق
+            لا رسائل بعد — أرسل رسالة
           </p>
         ) : (
           messages.map((m) => {
@@ -76,6 +83,19 @@ export function Chat({ tripId, sender }: ChatProps) {
         )}
       </div>
 
+      {/* Quick messages */}
+      <div className="flex gap-1.5 overflow-x-auto px-3 py-2 border-t border-ink-border bg-ink-bg/30">
+        {quickMessages.map((msg, idx) => (
+          <button
+            key={idx}
+            onClick={() => handleSend(msg)}
+            className="shrink-0 px-3 py-1.5 text-xs border border-gold/40 text-gold rounded-full hover:bg-gold/10 transition-colors whitespace-nowrap"
+          >
+            {msg}
+          </button>
+        ))}
+      </div>
+
       <div className="flex items-center gap-2 px-3 py-2.5 border-t border-ink-border">
         <input
           type="text"
@@ -89,7 +109,7 @@ export function Chat({ tripId, sender }: ChatProps) {
           dir="rtl"
         />
         <button
-          onClick={handleSend}
+          onClick={() => handleSend()}
           disabled={!text.trim() || sending}
           className="p-2.5 rounded-lg bg-gold text-ink-bg disabled:opacity-40 hover:opacity-90 transition"
         >

@@ -10,17 +10,46 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+
       - run: npm install
+
+      - run: npm install @capacitor/core @capacitor/android
+      - run: npm install -D @capacitor/cli
+
+      - name: Create capacitor.config.ts
+        run: |
+          cat > capacitor.config.ts << 'EOF'
+          import type { CapacitorConfig } from '@capacitor/cli';
+
+          const config: CapacitorConfig = {
+            appId: 'com.taxikhanaqin.app',
+            appName: 'تكسي خانقين',
+            webDir: 'dist',
+            server: {
+              androidScheme: 'https',
+            },
+          };
+
+          export default config;
+          EOF
+
       - run: npm run build
+
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
+
+      - run: npx cap add android
       - run: npx cap sync android
-      - run: cd android && chmod +x gradlew && ./gradlew assembleDebug
+
+      - name: Build APK
+        run: cd android && chmod +x gradlew && ./gradlew assembleDebug
+
       - uses: actions/upload-artifact@v4
         with:
           name: debug-apk

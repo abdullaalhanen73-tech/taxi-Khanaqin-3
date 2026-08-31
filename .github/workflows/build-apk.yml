@@ -45,6 +45,20 @@ jobs:
           java-version: '21'
 
       - run: npx cap add android
+      - name: Fix Kotlin stdlib duplicate classes
+        run: |
+          cat >> android/build.gradle << 'EOF'
+
+          allprojects {
+              configurations.all {
+                  resolutionStrategy {
+                      force 'org.jetbrains.kotlin:kotlin-stdlib:1.8.22'
+                      exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
+                      exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+                  }
+              }
+          }
+          EOF
       - run: npx cap sync android
 
       - name: Build APK

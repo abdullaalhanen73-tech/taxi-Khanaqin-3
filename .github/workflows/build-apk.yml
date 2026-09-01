@@ -45,6 +45,9 @@ jobs:
           java-version: '21'
 
       - run: npx cap add android
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/release.keystore
 
       - name: Prepare icon resource
         run: |
@@ -72,6 +75,26 @@ jobs:
           EOF
 
       - run: npx cap sync android
+      - name: Configure signing
+        run: |
+          cat >> android/app/build.gradle << EOF
+
+          android {
+              signingConfigs {
+                  release {
+                      storeFile file('release.keystore')
+                      storePassword '${{ secrets.KEYSTORE_PASSWORD }}'
+                      keyAlias '${{ secrets.KEY_ALIAS }}'
+                      keyPassword '${{ secrets.KEY_PASSWORD }}'
+                  }
+              }
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.release
+                  }
+              }
+          }
+          EOF
 
       - name: Build AAB
         run: cd android && chmod +x gradlew && ./gradlew bundleRelease

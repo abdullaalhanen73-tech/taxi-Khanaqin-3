@@ -45,6 +45,15 @@ jobs:
           java-version: '21'
 
       - run: npx cap add android
+      - name: Prepare icon resource
+        run: |
+          mkdir -p resources
+          cp icon.png resources/icon.png
+
+      - name: Generate app icons
+        run: |
+          npm install -D @capacitor/assets
+          npx capacitor-assets generate --android --iconBackgroundColor '#FFCD2D' --iconBackgroundColorDark '#FFCD2D'
       - name: Fix Kotlin stdlib duplicate classes
         run: |
           cat >> android/build.gradle << 'EOF'
